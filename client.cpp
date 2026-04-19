@@ -2,6 +2,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <cstdio>
 #include "security.h"
 
 #define PORT 8080
@@ -33,32 +34,51 @@ int main() {
         return 1;
     }
 
-    std::cout << "Sending PSK..." << std::endl;
-    send(sock, PSK, strlen(PSK), 0);
+    char username[50], password[50];
+    std::cout << "Enter username: ";
+    std::cin >> username;
+    std::cout << "Enter password: ";
+    std::cin >> password;
 
-    read(sock, buffer, BUFFER_SIZE);
+    char login_data[100] = {0};
+    sprintf(login_data, "%s %s", username, password);
 
-    if (strcmp(buffer, "AUTH_OK") != 0) {
+    encrypt(login_data, strlen(login_data));
+    send(sock, login_data, strlen(login_data), 0);
+
+    memset(buffer, 0, BUFFER_SIZE);
+    int valread = read(sock, buffer, BUFFER_SIZE);
+
+    if (valread <= 0) {
+        std::cout << "No response from server" << std::endl;
+        close(sock);
+        return 1;
+    }
+
+    decrypt(buffer, valread);
+    std::cout << "Server response: " << buffer << std::endl;
+
+    if (strncmp(buffer, "AUTH_OK", 7) != 0) {
         std::cout << "Authentication failed" << std::endl;
         close(sock);
         return 0;
     }
 
-    std::cout << "Authenticated successfully" << std::endl;
+    char command[BUFFER_SIZE] = {0};
+    std::cin.ignore();
 
-    char msg[] = "Hello from client";
-    encrypt(msg, strlen(msg));
+    std::cout << "Enter command: ";
+    std::cin.getline(command, BUFFER_SIZE);
 
-    std::cout << "Sending encrypted message..." << std::endl;
-    send(sock, msg, strlen(msg), 0);
+    encrypt(command, strlen(command));
+    send(sock, command, strlen(command), 0);
 
     memset(buffer, 0, BUFFER_SIZE);
-    int valread = read(sock, buffer, BUFFER_SIZE);
+    valread = read(sock, buffer, BUFFER_SIZE);
 
     if (valread > 0) {
-        std::cout << "Encrypted reply: " << buffer << std::endl;
         decrypt(buffer, valread);
-        std::cout << "Decrypted server message: " << buffer << std::endl;
+        std::cout << "Server says: " << buffer << std::endl;
     }
 
     close(sock);
