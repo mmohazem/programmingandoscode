@@ -3,41 +3,103 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <cstdio>
 #include "security.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+
+int authenticate(char* username, char* password, char* role_out) {
+    FILE* file = fopen("users.txt", "r");
+    if (file == NULL) {
+        std::cout << "Could not open users.txt" << std::endl;
+        return 0;
+    }
+
+    char file_user[50], file_pass[50], file_role[50];
+
+    while (fscanf(file, "%49s %49s %49s", file_user, file_pass, file_role) != EOF) {
+        if (strcmp(username, file_user) == 0 && strcmp(password, file_pass) == 0) {
+            strcpy(role_out, file_role);
+            fclose(file);
+            return 1;
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
 
 void* handle_client(void* socket_desc) {
     int client_socket = *(int*)socket_desc;
     delete (int*)socket_desc;
 
     char buffer[BUFFER_SIZE] = {0};
+    char username[50] = {0};
+    char password[50] = {0};
+    char role[50] = {0};
 
-    read(client_socket, buffer, BUFFER_SIZE);
-    std::cout << "Received PSK: " << buffer << std::endl;
+    int valread = read(client_socket, buffer, BUFFER_SIZE);
 
-    if (strcmp(buffer, PSK) != 0) {
-        std::cout << "Authentication failed" << std::endl;
+    if (valread <= 0) {
         close(client_socket);
         pthread_exit(NULL);
     }
 
-    std::cout << "Client authenticated successfully" << std::endl;
-    send(client_socket, "AUTH_OK", 7, 0);
+    decrypt(buffer, valread);
+    std::cout << "Received login data: " << buffer << std::endl;
+
+    sscanf(buffer, "%49s %49s", username, password);
+
+    if (!authenticate(username, password, role)) {
+        std::cout << "Authentication failed" << std::endl;
+        char fail_msg[] = "AUTH_FAIL";
+        encrypt(fail_msg, strlen(fail_msg));
+        send(client_socket, fail_msg, strlen(fail_msg), 0);
+        close(client_socket);
+        pthread_exit(NULL);
+    }
+
+    std::cout << "Client authenticated successfully as role: " << role << std::endl;
+
+    char auth_msg[100] = {0};
+    sprintf(auth_msg, "AUTH_OK %s", role);
+    encrypt(auth_msg, strlen(auth_msg));
+    send(client_socket, auth_msg, strlen(auth_msg), 0);
 
     memset(buffer, 0, BUFFER_SIZE);
-    int valread = read(client_socket, buffer, BUFFER_SIZE);
+    valread = read(client_socket, buffer, BUFFER_SIZE);
 
     if (valread > 0) {
-        std::cout << "Encrypted message from client: " << buffer << std::endl;
         decrypt(buffer, valread);
-        std::cout << "Decrypted client message: " << buffer << std::endl;
+        std::cout << "Decrypted command from client: " << buffer << std::endl;
 
-        char msg[] = "Hello from server";
-        encrypt(msg, strlen(msg));
-        std::cout << "Sending encrypted message to client..." << std::endl;
-        send(client_socket, msg, strlen(msg), 0);
+        char response[BUFFER_SIZE] = {0};
+
+        if (strcmp(role, "entry") == 0) {
+            if (strcmp(buffer, "ls") == 0 || strncmp(buffer, "read", 4) == 0) {
+                strcpy(response, "Command allowed for entry level user");
+            } else {
+                strcpy(response, "ACCESS DENIED: Entry level can only use ls and read");
+            }
+        }
+        else if (strcmp(role, "medium") == 0) {
+            if (strcmp(buffer, "ls") == 0 || strncmp(buffer, "read", 4) == 0 ||
+                strncmp(buffer, "copy", 4) == 0 || strncmp(buffer, "edit", 4) == 0) {
+                strcpy(response, "Command allowed for medium level user");
+            } else {
+                strcpy(response, "ACCESS DENIED: Medium level cannot delete files");
+            }
+        }
+        else if (strcmp(role, "top") == 0) {
+            strcpy(response, "Command allowed for top level user");
+        }
+        else {
+            strcpy(response, "ACCESS DENIED: Unknown role");
+        }
+
+        encrypt(response, strlen(response));
+        send(client_socket, response, strlen(response), 0);
     }
 
     close(client_socket);
